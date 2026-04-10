@@ -1,60 +1,112 @@
-/*
-AnotherOpportunityTrigger Overview
+public with sharing class OpportunityTriggerHandler extends TriggerHandler {
+    private List<Opportunity> newOpps;
+    
+    private List<Opportunity> oldOpps;
 
-This trigger was initially created for handling various events on the Opportunity object. It was developed by a prior developer and has since been noted to cause some issues in our org.
+    private Map<Id, Opportunity> newOppsMap;
 
-IMPORTANT:
-- This trigger does not adhere to Salesforce best practices.
-- It is essential to review, understand, and refactor this trigger to ensure maintainability, performance, and prevent any inadvertent issues.
+    public OpportunityTriggerHandler(List<Opportunity> newOpps, List<Opportunity> oldOpps, Map<Id, Opportunity> newOppsMap) {
+        this.newOpps = newOpps;
+        this.oldOpps = oldOpps;
+        this.newOppsMap = newOppsMap;
+    }
 
-ISSUES:
-DONE - Avoid nested for loop - 1 instance
-DONE - Avoid DML inside for loop - 1 instance
-DONE - Bulkify Your Code - 1 instance
-DONE - Avoid SOQL Query inside for loop - 2 instances
-Stop recursion - 1 instance
+    public override void beforeInsert() {
+        setOpportunityType();
+    }
 
-RESOURCES: 
-https://www.salesforceben.com/12-salesforce-apex-best-practices/
-https://developer.salesforce.com/blogs/developer-relations/2015/01/apex-best-practices-15-apex-commandments
-*/
+    public override void afterInsert() {
+        insertNewTasks();
+    }
 
+    public override void beforeUpdate() {
+        validateOpportunityAmount();
+        setPrimaryContact();
+        updateOpportunityDescription();
+    }
 
+    public override void beforeDelete() {
+        blockOpportunityDelete();
+    }
 
-trigger AnotherOpportunityTrigger on Opportunity (before insert, after insert, before update, after update, before delete, after delete, after undelete) {
-    /*
-    if (Trigger.isBefore){
-        if (Trigger.isInsert){
-            // Set default Type for new Opportunities
-            for(Opportunity opp : Trigger.new) {
+    public override void afterDelete() {
+        notifyOwnersOpportunityDeleted(oldOpps);
+    }
+
+    public override void afterUndelete() {
+        assignPrimaryContact(newOppsMap);
+    }
+
+    private void setOpportunityType() {
+        for(Opportunity opp : newOpps) {
                 if (opp.Type == null){
                 opp.Type = 'New Customer';
             }
             }
-                    
-        } else if (Trigger.isDelete){
-            // Prevent deletion of closed Opportunities
-            for (Opportunity oldOpp : Trigger.old){
-                if (oldOpp.IsClosed){
-                    oldOpp.addError('Cannot delete closed opportunity');
+    }
+
+    private void validateOpportunityAmount() {
+        for(Opportunity opp : newOpps){
+            if(opp.Amount < 5000){
+                opp.addError('Opportunity amount must be greater than 5000');
+            }
+        }
+    }
+
+    private void blockOpportunityDelete() {
+        Set<Id> oldOppAccountIds = new Set<Id>();
+        for(Opportunity opp : oldOpps) {
+            oldOppAccountIds.add(opp.AccountId);
+        }
+        if(oldOppAccountIds.isEmpty()) {
+            return;
+        }
+        Map<Id, Account> accounts = new Map<Id, Account>([SELECT Id, Industry FROM Account WHERE Id IN :oldOppAccountIds]);
+        for(Opportunity opp : oldOpps){
+            if(opp.StageName == null || accounts == null) {
+                break;
+            }
+            else if(opp.AccountId != null && ((opp.StageName == 'Closed Won' && (accounts.get(opp.AccountId).Industry == 'Banking')) || opp.IsClosed)){
+                    opp.addError('Cannot delete closed opportunity');
+                }
+    }
+}
+
+    private void setPrimaryContact() {
+        Set<Id> accountIds = new Set<Id>();
+        for(Opportunity opp : newOpps){
+            accountIds.add(opp.AccountId);
+        }
+        
+        Map<Id, Contact> contacts = new Map<Id, Contact>([SELECT Id, FirstName, AccountId FROM Contact WHERE AccountId IN :accountIds AND Title = 'CEO' ORDER BY FirstName ASC]);
+        Map<Id, Contact> accountIdToContact = new Map<Id, Contact>();
+
+        for (Contact cont : contacts.values()) {
+            if (!accountIdToContact.containsKey(cont.AccountId)) {
+                accountIdToContact.put(cont.AccountId, cont);
+            }
+        }
+
+        for(Opportunity opp : newOpps){
+            if(opp.Primary_Contact__c == null){
+                if (accountIdToContact.containsKey(opp.AccountId)){
+                    opp.Primary_Contact__c = accountIdToContact.get(opp.AccountId).Id;
                 }
             }
-        } else if (Trigger.isUpdate) {
-            for (Opportunity opp : Trigger.new){
+        }
+    }
+
+    private void updateOpportunityDescription() {
+        for (Opportunity opp : newOpps){
                 if(opp.StageName != null) {
                     opp.Description += '\n Stage Change:' + opp.StageName + ':' + DateTime.now().format();
                 }              
             }
-        }
     }
-    */
 
-    /*
-    if (Trigger.isAfter){
-        if (Trigger.isInsert){
-            // Create a new Task for newly inserted Opportunities
-            List<Task> newTasks = new List<Task>();
-            for (Opportunity opp : Trigger.new){
+    private void insertNewTasks() {
+        List<Task> newTasks = new List<Task>();
+            for (Opportunity opp : newOpps){
                 Task tsk = new Task();
                 tsk.Subject = 'Call Primary Contact';
                 tsk.WhatId = opp.Id;
@@ -64,23 +116,8 @@ trigger AnotherOpportunityTrigger on Opportunity (before insert, after insert, b
                 newTasks.add(tsk);
             }
             insert newTasks;
-        }
-        // Send email notifications when an Opportunity is deleted 
-        else if (Trigger.isDelete){
-            notifyOwnersOpportunityDeleted(Trigger.old);
-        } 
-        // Assign the primary contact to undeleted Opportunities
-        else if (Trigger.isUndelete){
-            assignPrimaryContact(Trigger.newMap);
-        }
     }
-    */
 
-    // notifyOwnersOpportunityDeleted:
-    // - Sends an email notification to the owner of the Opportunity when it gets deleted.
-    // - Uses Salesforce's Messaging.SingleEmailMessage to send the email.
-
-    /*
     private static void notifyOwnersOpportunityDeleted(List<Opportunity> opps) {
         // Create a list of emails to send
         List<Messaging.SingleEmailMessage> mails = new List<Messaging.SingleEmailMessage>();
@@ -114,15 +151,7 @@ trigger AnotherOpportunityTrigger on Opportunity (before insert, after insert, b
             System.debug('Exception: ' + e.getMessage());
         }
     }
-    */
 
-    // assignPrimaryContact:
-    // - Assigns a primary contact with the title of 'VP Sales' to undeleted Opportunities.
-    // - Only updates the Opportunities that don't already have a primary contact.
-
-    // Method parameter is a map of the undeleted Opportunities and their Ids
-
-    /*
     private static void assignPrimaryContact(Map<Id,Opportunity> oppNewMap) {
         // We are going to need the Account Ids of the Opportunities in oppNewMap
         // These Account Ids will link the Opportunities to the Primary Contacts
@@ -143,7 +172,6 @@ trigger AnotherOpportunityTrigger on Opportunity (before insert, after insert, b
         // Loop through the undeleted Opps, extract each Account Id, create an Account
         // Create and store the Account's list of related Contacts
         // If the undeleted Opp has no Primary Contact and some related Contacts exist, update Opp
-
         for(Opportunity opp : oppNewMap.values()) {
             Account acc = accountMap.get(opp.AccountId);
             List<Contact> contacts = acc.Contacts;
@@ -157,5 +185,4 @@ trigger AnotherOpportunityTrigger on Opportunity (before insert, after insert, b
 
         update oppMap.values();
     }
-    */
 }
